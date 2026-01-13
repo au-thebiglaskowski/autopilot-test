@@ -493,14 +493,14 @@ function Show-Banner {
     param()
 
     Write-Host ""
-    Write-Color -Text "  __ _ ", " _   _ ", " _ __   __ _ | |_   _ | |_ (_) ___ ___ " -Color White, Cyan, White -Center $True
-    Write-Color -Text " / _` |", "| | | |", "| '_ \ / _` || | | | || __|| |/ __/ __|" -Color White, Cyan, White -Center $True
-    Write-Color -Text "| (_| |", "| |_| |", "| | | || (_| || | |_| || |_ | | (__\__ \" -Color White, Cyan, White -Center $True
-    Write-Color -Text " \__,_|", " \__,_|", "|_| |_| \__,_||_|\__, | \__||_|\___|___/" -Color White, Cyan, White -Center $True
-    Write-Color -Text "       ", "       ", "                 |___/                  " -Color White, Cyan, White -Center $True
+    Write-Color -Text "  __ _ ", " _   _ ", " _ __   __ _ | |_   _ | |_ (_) ___ ___ " -Color White, Cyan, White
+    Write-Color -Text " / _` |", "| | | |", "| '_ \ / _` || | | | || __|| |/ __/ __|" -Color White, Cyan, White
+    Write-Color -Text "| (_| |", "| |_| |", "| | | || (_| || | |_| || |_ | | (__\__ \" -Color White, Cyan, White
+    Write-Color -Text " \__,_|", " \__,_|", "|_| |_| \__,_||_|\__, | \__||_|\___|___/" -Color White, Cyan, White
+    Write-Color -Text "       ", "       ", "                 |___/                  " -Color White, Cyan, White
     Write-Host ""
-    Write-Color -Text "AutopilotOOBE Prep ", "v4.0" -Color White, Cyan -Center $True
-    Write-Color -Text "Entra App + Azure Key Vault" -Color DarkGray -Center $True
+    Write-Color -Text "AutopilotOOBE Prep ", "v4.0" -Color White, Cyan
+    Write-Color -Text "Entra App + Azure Key Vault" -Color DarkGray
     Write-Host ""
 }
 
@@ -537,7 +537,7 @@ try {
     # Now show the banner
     Show-Banner
 
-    Write-Color -Text "Note: " , "You can use Alt+Tab to switch to windows that get hidden behind OOBE. Naming convention: WAU####" -Color Red, White -Center $True -LinesAfter 1
+    Write-Color -Text "Note: " , "You can use Alt+Tab to switch to windows that get hidden behind OOBE. Naming convention: WAU####" -Color Red, White -LinesAfter 1
     Write-Color -Text "Log file: ", "$transcriptPath" -Color DarkGray, White -ShowTime -LinesAfter 1
 
     # ==================== CONFIGURATION VALIDATION ====================
