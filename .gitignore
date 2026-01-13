@@ -1,0 +1,23 @@
+# Certificate files - contain sensitive private keys
+*.pfx
+*.p12
+*.cer
+
+# Base64 encoded certificate data
+*-Base64.txt
+
+# Temporary Claude files
+tmpclaude-*
+
+# PowerShell transcript logs (may contain sensitive info)
+*.log
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.user

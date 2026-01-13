@@ -7,8 +7,8 @@
     without having to dump a json to $env:ProgramData\OSDeploy\OSDeploy.AutopilotOOBE.json that would get left
     on the PC after provisioning.
 
-    Authentication is handled via an Entra App Registration with client credentials stored in Azure Key Vault,
-    eliminating the need for interactive device code authentication during OOBE.
+    Authentication is handled via an Entra App Registration with certificate-based authentication.
+    The certificate is embedded in the script (Base64 encoded) for fully automated, zero-prompt deployment.
 
     Info about the AutopilotOOBE module can be found here: https://autopilotoobe.osdeploy.com/parameters/reference
 
@@ -19,35 +19,25 @@
     None
 
     .EXAMPLE
-    The below URL will launch this script on the PC without having to do anything else. It loads the raw github
-    of this script from: https://github.com/AU-RKocsis/AU-Autopilot/blob/main/AU-Autopilot.ps1
+    The below URL will launch this script on the PC without having to do anything else.
 
-    irm https://tinyurl.com/AU-Autopilot | iex
+    irm tinyurl.com/au-autopilot-test | iex
 
     .NOTES
-    Version:        4.0
+    Version:        5.0
     Author:         Mark Newton
     Creation Date:  07/02/2024
     Updated by:     Robert Kocsis & Joe Laskowski
-    Update Date:    01/13/2025
+    Update Date:    01/13/2026
     Purpose/Change: Initial script development
     Update 2.0:     Added bypass for WAM (Web Account Manager) to avoid "Personal" or "Work Account" prompt
-                    Added connection success message, updated GUI to reflect current Computer Naming Standards
-                    Moved to IIT GitHub Repository, updated URL in example, need to update tinyurl link as well
-    Update 2.1:     Code cleanup - extracted WAM functions, added module version constraints,
-                    scoped ExecutionPolicy to Process, added Graph connection validation,
-                    removed duplicate code blocks
-    Update 2.2:     Added duplicate device detection - removes existing Autopilot registration before
-                    re-registering to prevent duplicate device records in Intune
-    Update 3.0:     Major improvements - added pre-flight checks (admin, PowerShell version, network),
-                    replaced embedded Write-Color with PSWriteColor module, added transcript logging,
-                    added progress indicators for long operations
-    Update 3.1:     Microsoft documentation alignment - added Group.ReadWrite.All scope for AddToGroup
-                    functionality, added Entra group validation before AutopilotOOBE runs,
-                    improved error messages with actionable guidance
-    Update 4.0:     Enterprise authentication - replaced interactive device code flow with Entra App
-                    Registration using client credentials from Azure Key Vault. No user interaction
-                    required for Graph authentication. Added Az.KeyVault and Az.Accounts modules.
+    Update 2.1:     Code cleanup - extracted WAM functions, added module version constraints
+    Update 2.2:     Added duplicate device detection - removes existing Autopilot registration
+    Update 3.0:     Added pre-flight checks, PSWriteColor module, transcript logging
+    Update 3.1:     Microsoft documentation alignment - added group validation
+    Update 4.0:     Enterprise authentication with Azure Key Vault
+    Update 5.0:     Certificate-based authentication - fully automated, zero user interaction required.
+                    Removed Key Vault dependency. Certificate embedded in script per MS best practices.
 
     #>
 
@@ -56,17 +46,16 @@
 
 ##############################################################################################################
 #                                          CONFIGURATION                                                     #
-#  Update these values with your Entra App Registration and Key Vault details                               #
 ##############################################################################################################
 
 $script:Config = @{
-    # Entra App Registration (from Azure Portal > Entra ID > App registrations)
-    TenantId     = '34996142-c2c2-49f6-a30d-ccf73f568c9c'   # Directory (tenant) ID
-    ClientId     = 'bf98483c-c034-4338-802a-8bb0d84fb462'   # Application (client) ID
+    # Entra App Registration
+    TenantId = '34996142-c2c2-49f6-a30d-ccf73f568c9c'
+    ClientId = 'bf98483c-c034-4338-802a-8bb0d84fb462'
 
-    # Azure Key Vault (where the client secret is stored)
-    KeyVaultName = 'IITScriptKeyVault'             # Key Vault name
-    SecretName   = 'AutopilotOOBE-ClientSecret'    # Secret name in Key Vault
+    # Certificate (Base64-encoded PFX)
+    CertificateBase64 = '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'
+    CertificatePassword = 'TempExportPass123!'
 }
 
 ##############################################################################################################
@@ -77,9 +66,6 @@ function Test-NetworkConnectivity {
     <#
     .SYNOPSIS
     Tests network connectivity to required Microsoft endpoints.
-
-    .OUTPUTS
-    Returns $true if connectivity is available, $false otherwise.
     #>
     [CmdletBinding()]
     param()
@@ -87,7 +73,6 @@ function Test-NetworkConnectivity {
     $endpoints = @(
         @{ Name = 'Microsoft Graph'; Host = 'graph.microsoft.com' },
         @{ Name = 'Microsoft Login'; Host = 'login.microsoftonline.com' },
-        @{ Name = 'Azure Key Vault'; Host = "$($script:Config.KeyVaultName).vault.azure.net" },
         @{ Name = 'PowerShell Gallery'; Host = 'www.powershellgallery.com' }
     )
 
@@ -117,18 +102,11 @@ function Set-WAMState {
     <#
     .SYNOPSIS
     Enables or disables Web Account Manager (WAM) via registry settings.
-
-    .PARAMETER Enabled
-    Set to $true to enable WAM, $false to disable it.
-
-    .PARAMETER Silent
-    Suppress error output if registry operations fail.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [bool]$Enabled,
-
         [switch]$Silent
     )
 
@@ -156,100 +134,57 @@ function Set-WAMState {
     }
 }
 
-function Get-KeyVaultSecret {
+function Get-CertificateFromBase64 {
     <#
     .SYNOPSIS
-    Retrieves a secret from Azure Key Vault using managed identity or device code.
-
-    .PARAMETER VaultName
-    The name of the Key Vault.
-
-    .PARAMETER SecretName
-    The name of the secret to retrieve.
-
-    .OUTPUTS
-    Returns the secret value as a SecureString.
+    Creates an X509Certificate2 object from a Base64-encoded PFX string.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$VaultName,
-
+        [string]$Base64Pfx,
         [Parameter(Mandatory = $true)]
-        [string]$SecretName
+        [string]$Password
     )
 
-    Write-Color -Text "Retrieving client secret from Azure Key Vault..." -Color Yellow -ShowTime
-
     try {
-        # First, try to connect using managed identity (works in Azure VMs, Azure Arc, etc.)
-        try {
-            Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
-            Write-Color -Text "  Connected to Azure using Managed Identity" -Color Green -ShowTime
-        }
-        catch {
-            # Fall back to device code for non-Azure environments
-            Write-Color -Text "  Managed Identity not available, using device code authentication..." -Color Yellow -ShowTime
-            Write-Color -Text "  A code will be displayed. Enter it at ", "https://microsoft.com/devicelogin" -Color Cyan, White -ShowTime
-            Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop | Out-Null
-            Write-Color -Text "  Connected to Azure" -Color Green -ShowTime
-        }
-
-        # Retrieve the secret
-        $secret = Get-AzKeyVaultSecret -VaultName $VaultName -Name $SecretName -ErrorAction Stop
-        if (-not $secret) {
-            throw "Secret '$SecretName' not found in Key Vault '$VaultName'"
-        }
-
-        Write-Color -Text "  Successfully retrieved secret from Key Vault" -Color Green -ShowTime
-        return $secret.SecretValue
+        $pfxBytes = [System.Convert]::FromBase64String($Base64Pfx)
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+            $pfxBytes,
+            $Password,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+        )
+        return $cert
     }
     catch {
-        throw "Failed to retrieve secret from Key Vault: $($_.Exception.Message)"
+        throw "Failed to load certificate from Base64: $($_.Exception.Message)"
     }
 }
 
-function Connect-GraphWithAppRegistration {
+function Connect-GraphWithCertificate {
     <#
     .SYNOPSIS
-    Connects to Microsoft Graph using an Entra App Registration with client credentials.
-
-    .PARAMETER TenantId
-    The Entra tenant ID.
-
-    .PARAMETER ClientId
-    The application (client) ID.
-
-    .PARAMETER ClientSecret
-    The client secret as a SecureString.
+    Connects to Microsoft Graph using certificate-based authentication.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$TenantId,
-
         [Parameter(Mandatory = $true)]
         [string]$ClientId,
-
         [Parameter(Mandatory = $true)]
-        [SecureString]$ClientSecret
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
     )
 
-    Write-Color -Text "Connecting to Microsoft Graph using App Registration..." -Color Yellow -ShowTime
+    Write-Color -Text "Connecting to Microsoft Graph using certificate authentication..." -Color Yellow -ShowTime
 
     try {
-        # Create credential object
-        $credential = New-Object System.Management.Automation.PSCredential($ClientId, $ClientSecret)
+        Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -Certificate $Certificate -NoWelcome -ErrorAction Stop
 
-        # Connect to Graph with client credentials
-        Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $credential -NoWelcome -ErrorAction Stop
-
-        # Verify connection
         $context = Get-MgContext
         if ($context) {
-            Write-Color -Text "  Connected as: ", "$($context.AppName)" -Color Green, White -ShowTime
-            Write-Color -Text "  Tenant: ", "$($context.TenantId)" -Color Green, White -ShowTime
-            Write-Color -Text "  Auth Type: ", "Client Credentials (App Registration)" -Color Green, Cyan -ShowTime
+            Write-Color -Text "  Connected to tenant: ", "$($context.TenantId)" -Color Green, White -ShowTime
+            Write-Color -Text "  Auth type: ", "Certificate (App-Only)" -Color Green, Cyan -ShowTime
             return $true
         }
         else {
@@ -265,9 +200,6 @@ function Test-MgGraphConnection {
     <#
     .SYNOPSIS
     Validates that a Microsoft Graph connection exists.
-
-    .OUTPUTS
-    Returns $true if connection exists, $false otherwise.
     #>
     [CmdletBinding()]
     param()
@@ -280,18 +212,10 @@ function Remove-ExistingAutopilotDevice {
     <#
     .SYNOPSIS
     Checks if this device is already registered in Autopilot and removes it if found.
-
-    .DESCRIPTION
-    Queries Intune for existing Autopilot device registrations matching this device's
-    serial number. If found, removes the existing registration to prevent duplicates.
-
-    .OUTPUTS
-    Returns $true if a device was found and removed, $false if no existing device was found.
     #>
     [CmdletBinding()]
     param()
 
-    # Get the device serial number
     $serialNumber = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber
     if ([string]::IsNullOrWhiteSpace($serialNumber)) {
         Write-Color -Text "WARNING: Could not retrieve device serial number" -Color Yellow -ShowTime
@@ -301,12 +225,11 @@ function Remove-ExistingAutopilotDevice {
     Write-Color -Text "Checking for existing Autopilot registration (Serial: ", "$serialNumber", ")..." -Color White, Cyan, White -ShowTime
 
     try {
-        # Query for existing Autopilot devices with this serial number
         $existingDevices = Get-MgDeviceManagementWindowsAutopilotDeviceIdentity -Filter "contains(serialNumber,'$serialNumber')" -ErrorAction Stop
 
         if ($existingDevices) {
             $deviceCount = @($existingDevices).Count
-            Write-Color -Text "Found ", "$deviceCount", " existing Autopilot registration(s) for this device" -Color Yellow, Cyan, Yellow -ShowTime
+            Write-Color -Text "Found ", "$deviceCount", " existing Autopilot registration(s)" -Color Yellow, Cyan, Yellow -ShowTime
 
             foreach ($device in $existingDevices) {
                 Write-Color -Text "Removing existing registration: ", "$($device.Id)" -Color Yellow, White -ShowTime
@@ -314,10 +237,8 @@ function Remove-ExistingAutopilotDevice {
                 Write-Color -Text "Successfully removed existing Autopilot registration" -Color Green -ShowTime
             }
 
-            # Wait for deletion to propagate before re-registering
             Write-Color -Text "Waiting 10 seconds for deletion to propagate..." -Color Yellow -ShowTime
             Start-Sleep -Seconds 10
-
             return $true
         }
         else {
@@ -336,18 +257,11 @@ function Install-RequiredModule {
     <#
     .SYNOPSIS
     Installs a PowerShell module with progress indication.
-
-    .PARAMETER Name
-    The name of the module to install.
-
-    .PARAMETER MinimumVersion
-    The minimum version required.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name,
-
         [string]$MinimumVersion
     )
 
@@ -361,7 +275,6 @@ function Install-RequiredModule {
         $installParams['MinimumVersion'] = $MinimumVersion
     }
 
-    # Check if module is already installed with required version
     $existing = Get-Module -Name $Name -ListAvailable | Where-Object {
         -not $MinimumVersion -or $_.Version -ge [version]$MinimumVersion
     } | Select-Object -First 1
@@ -387,12 +300,6 @@ function Test-EntraGroupExists {
     <#
     .SYNOPSIS
     Validates that specified Entra ID groups exist before running AutopilotOOBE.
-
-    .PARAMETER GroupNames
-    Array of group display names to validate.
-
-    .OUTPUTS
-    Returns $true if all groups exist, $false if any are missing.
     #>
     [CmdletBinding()]
     param(
@@ -426,68 +333,19 @@ function Test-EntraGroupExists {
 
     if (-not $allExist) {
         Write-Color -Text " "
-        Write-Color -Text "WARNING: The following groups were not found in Entra ID:" -Color Yellow -ShowTime
+        Write-Color -Text "WARNING: Some groups were not found in Entra ID" -Color Yellow -ShowTime
         foreach ($missing in $missingGroups) {
-            Write-Color -Text "  - $missing" -Color White -ShowTime
+            Write-Color -Text "  - $missing" -Color White
         }
-        Write-Color -Text " "
-        Write-Color -Text "Please verify:" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Group names are spelled correctly in the script" -Color White
-        Write-Color -Text "  2. Groups exist in your Entra ID tenant" -Color White
-        Write-Color -Text "  3. The App Registration has Group.Read.All permission" -Color White
     }
 
     return $allExist
 }
 
-function Test-ConfigurationValid {
-    <#
-    .SYNOPSIS
-    Validates that the configuration values have been updated from placeholders.
-
-    .OUTPUTS
-    Returns $true if configuration is valid, throws error if placeholders detected.
-    #>
-    [CmdletBinding()]
-    param()
-
-    $errors = @()
-
-    if ($script:Config.TenantId -eq 'YOUR-TENANT-ID-HERE' -or [string]::IsNullOrWhiteSpace($script:Config.TenantId)) {
-        $errors += "TenantId is not configured"
-    }
-
-    if ($script:Config.ClientId -eq 'YOUR-CLIENT-ID-HERE' -or [string]::IsNullOrWhiteSpace($script:Config.ClientId)) {
-        $errors += "ClientId is not configured"
-    }
-
-    if ($script:Config.KeyVaultName -eq 'YOUR-KEYVAULT-NAME' -or [string]::IsNullOrWhiteSpace($script:Config.KeyVaultName)) {
-        $errors += "KeyVaultName is not configured"
-    }
-
-    if ($errors.Count -gt 0) {
-        Write-Color -Text " "
-        Write-Color -Text "CONFIGURATION ERROR: Please update the configuration section at the top of this script" -Color Red -ShowTime
-        Write-Color -Text " "
-        foreach ($err in $errors) {
-            Write-Color -Text "  - $err" -Color Yellow
-        }
-        Write-Color -Text " "
-        Write-Color -Text "Required values:" -Color Cyan -ShowTime
-        Write-Color -Text "  TenantId     : Your Entra Directory (tenant) ID" -Color White
-        Write-Color -Text "  ClientId     : Your App Registration Application (client) ID" -Color White
-        Write-Color -Text "  KeyVaultName : Your Azure Key Vault name" -Color White
-        Write-Color -Text "  SecretName   : Name of the secret containing the client secret" -Color White
-        throw "Configuration is incomplete. Please update the values in the CONFIGURATION section."
-    }
-
-    return $true
-}
-
 function Show-Banner {
     <#
     .SYNOPSIS
-    Displays the Aunalytics ASCII banner matching company branding.
+    Displays the Aunalytics ASCII banner.
     #>
     [CmdletBinding()]
     param()
@@ -499,8 +357,8 @@ function Show-Banner {
     Write-Color -Text " \__,_|", " \__,_|", "|_| |_| \__,_||_|\__, | \__||_|\___|___/" -Color White, Cyan, White
     Write-Color -Text "       ", "       ", "                 |___/                  " -Color White, Cyan, White
     Write-Host ""
-    Write-Color -Text "AutopilotOOBE Prep ", "v4.0" -Color White, Cyan
-    Write-Color -Text "Entra App + Azure Key Vault" -Color DarkGray
+    Write-Color -Text "AutopilotOOBE Prep ", "v5.0" -Color White, Cyan
+    Write-Color -Text "Certificate Authentication (Zero-Prompt)" -Color DarkGray
     Write-Host ""
 }
 
@@ -508,25 +366,20 @@ function Show-Banner {
 #                                                   Main                                                     #
 ##############################################################################################################
 
-# Initialize transcript logging
 $transcriptPath = Join-Path $env:TEMP "AutopilotOOBE_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 Start-Transcript -Path $transcriptPath -Force | Out-Null
 
 try {
     Clear-Host
 
-    # Set execution policy to Unrestricted for this process only
     Set-ExecutionPolicy Unrestricted -Scope Process -Force
-
-    # Set the PSGallery to trusted to automate installing modules
     Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
 
-    # Install NuGet provider if needed
     if ((Get-PackageProvider).Name -notcontains 'NuGet') {
         Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
     }
 
-    # Install PSWriteColor first so we can use it for the banner
+    # Install PSWriteColor first for banner
     $psWriteColorInstalled = Get-Module -Name 'PSWriteColor' -ListAvailable
     if (-not $psWriteColorInstalled) {
         Write-Host "[SETUP] Installing PSWriteColor module..." -ForegroundColor Yellow
@@ -534,24 +387,16 @@ try {
     }
     Import-Module 'PSWriteColor' -Force
 
-    # Now show the banner
     Show-Banner
 
-    Write-Color -Text "Note: " , "You can use Alt+Tab to switch to windows that get hidden behind OOBE. Naming convention: WAU####" -Color Red, White -LinesAfter 1
-    Write-Color -Text "Log file: ", "$transcriptPath" -Color DarkGray, White -ShowTime -LinesAfter 1
-
-    # ==================== CONFIGURATION VALIDATION ====================
-    Write-Color -Text "Validating configuration..." -Color White -ShowTime
-    Test-ConfigurationValid | Out-Null
-    Write-Color -Text "Configuration validated" -Color Green -ShowTime -LinesAfter 1
+    Write-Color -Text "Note: ", "You can use Alt+Tab to switch to windows hidden behind OOBE. Naming: WAU####" -Color Red, White -LinesAfter 1
+    Write-Color -Text "Log: ", "$transcriptPath" -Color DarkGray, White -ShowTime -LinesAfter 1
 
     # ==================== PRE-FLIGHT CHECKS ====================
     Write-Color -Text "Running pre-flight checks..." -Color White -ShowTime
-
-    # Check network connectivity
     Write-Color -Text "Checking network connectivity:" -Color Yellow -ShowTime
     if (-not (Test-NetworkConnectivity)) {
-        throw "Network connectivity check failed. Please ensure you have internet access and try again."
+        throw "Network connectivity check failed. Please ensure you have internet access."
     }
     Write-Color -Text "All network checks passed" -Color Green -ShowTime -LinesAfter 1
 
@@ -559,8 +404,6 @@ try {
     Write-Color -Text "Installing required PowerShell modules:" -Color White -ShowTime
 
     $modules = @(
-        @{ Name = 'Az.Accounts'; MinimumVersion = '2.0.0' },
-        @{ Name = 'Az.KeyVault'; MinimumVersion = '4.0.0' },
         @{ Name = 'Microsoft.Graph.Authentication'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.Groups'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.Identity.DirectoryManagement'; MinimumVersion = '2.0.0' },
@@ -573,8 +416,6 @@ try {
     }
 
     Write-Color -Text "Importing modules..." -Color Yellow -ShowTime
-    Import-Module 'Az.Accounts' -Force
-    Import-Module 'Az.KeyVault' -Force
     Import-Module 'Microsoft.Graph.Authentication' -Force
     Import-Module 'Microsoft.Graph.Groups' -Force
     Import-Module 'Microsoft.Graph.Identity.DirectoryManagement' -Force
@@ -586,28 +427,31 @@ try {
     Write-Color -Text "Disabling Web Account Manager (WAM) via registry..." -Color Yellow -ShowTime
     Set-WAMState -Enabled $false
 
-    # ==================== AZURE KEY VAULT - RETRIEVE SECRET ====================
+    # ==================== CERTIFICATE AUTHENTICATION ====================
     Write-Color -Text " "
-    $clientSecret = Get-KeyVaultSecret -VaultName $script:Config.KeyVaultName -SecretName $script:Config.SecretName
+    Write-Color -Text "Loading authentication certificate..." -Color Yellow -ShowTime
+    $cert = Get-CertificateFromBase64 -Base64Pfx $script:Config.CertificateBase64 -Password $script:Config.CertificatePassword
+    Write-Color -Text "  Certificate loaded: ", "$($cert.Subject)" -Color Green, White -ShowTime
+    Write-Color -Text "  Thumbprint: ", "$($cert.Thumbprint)" -Color Green, White -ShowTime
+    Write-Color -Text "  Expires: ", "$($cert.NotAfter)" -Color Green, White -ShowTime
 
     # ==================== GRAPH CONNECTION ====================
     Write-Color -Text " "
     if (-not (Test-MgGraphConnection)) {
-        Connect-GraphWithAppRegistration `
+        Connect-GraphWithCertificate `
             -TenantId $script:Config.TenantId `
             -ClientId $script:Config.ClientId `
-            -ClientSecret $clientSecret
+            -Certificate $cert
     }
     else {
         Write-Color -Text "Already connected to Microsoft Graph" -Color Green -ShowTime
     }
 
-    # Clear the secret from memory
-    $clientSecret = $null
+    # Clear certificate from memory
+    $cert = $null
     [System.GC]::Collect()
 
     # ==================== AUTOPILOT OOBE CONFIGURATION ====================
-    # Define AutopilotOOBE parameters first so we can validate groups
     $Params = [ordered]@{
         Title                       = 'Aunalytics Autopilot Registration'
         AssignedUserExample         = 'username@aunalytics.com'
@@ -626,9 +470,7 @@ try {
     Write-Color -Text " "
     $groupsToValidate = $Params['AddToGroupOptions']
     if (-not (Test-EntraGroupExists -GroupNames $groupsToValidate)) {
-        Write-Color -Text " "
-        Write-Color -Text "WARNING: Some groups could not be validated. AutopilotOOBE may fail if groups don't exist." -Color Yellow -ShowTime
-        Write-Color -Text "Continuing anyway - AutopilotOOBE will show an error if the selected group is invalid." -Color Yellow -ShowTime
+        Write-Color -Text "WARNING: Some groups could not be validated. Continuing anyway." -Color Yellow -ShowTime
     }
     else {
         Write-Color -Text "All groups validated successfully" -Color Green -ShowTime
@@ -638,6 +480,7 @@ try {
     Write-Color -Text " "
     Remove-ExistingAutopilotDevice | Out-Null
 
+    # ==================== LAUNCH AUTOPILOT OOBE ====================
     Write-Color -Text " "
     Write-Color -Text "Starting AutopilotOOBE with configured parameters:" -Color White -ShowTime
     ForEach ($Param in $Params.Keys) {
@@ -651,10 +494,8 @@ try {
 
     Write-Color -Text " "
 
-    # Run AutopilotOOBE
     AutopilotOOBE @Params
 
-    # Restore WAM
     Write-Color -Text "Restoring Web Account Manager (WAM) registry settings..." -Color Yellow -ShowTime
     Set-WAMState -Enabled $true
 }
@@ -667,79 +508,35 @@ catch {
     Write-Color -Text "===============================================" -Color Red -ShowTime
     Write-Color -Text " "
 
-    # Provide actionable guidance based on error type
     $errorMessage = $_.Exception.Message
-    if ($errorMessage -match 'Configuration is incomplete') {
-        Write-Color -Text "TROUBLESHOOTING: Configuration not set" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Edit this script and find the CONFIGURATION section near the top" -Color White
-        Write-Color -Text "  2. Replace placeholder values with your Entra App Registration details" -Color White
-        Write-Color -Text "  3. Ensure your Key Vault name and secret name are correct" -Color White
+    if ($errorMessage -match 'certificate|pfx|base64') {
+        Write-Color -Text "TROUBLESHOOTING: Certificate issue detected" -Color Cyan -ShowTime
+        Write-Color -Text "  1. Verify the certificate was uploaded to the App Registration" -Color White
+        Write-Color -Text "  2. Check that the Base64 string in the script is correct" -Color White
+        Write-Color -Text "  3. Ensure the certificate hasn't expired" -Color White
     }
-    elseif ($errorMessage -match 'Key Vault|secret|vault') {
-        Write-Color -Text "TROUBLESHOOTING: Azure Key Vault issue detected" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Verify the Key Vault name is correct: $($script:Config.KeyVaultName)" -Color White
-        Write-Color -Text "  2. Verify the secret exists: $($script:Config.SecretName)" -Color White
-        Write-Color -Text "  3. Ensure the App Registration has 'Key Vault Secrets User' role on the vault" -Color White
-        Write-Color -Text "  4. Check if Key Vault firewall allows access from this network" -Color White
-    }
-    elseif ($errorMessage -match 'Network|connection|timeout|unable to connect') {
-        Write-Color -Text "TROUBLESHOOTING: Network connectivity issue detected" -Color Cyan -ShowTime
+    elseif ($errorMessage -match 'Network|connection|timeout') {
+        Write-Color -Text "TROUBLESHOOTING: Network issue detected" -Color Cyan -ShowTime
         Write-Color -Text "  1. Verify the device has internet access" -Color White
-        Write-Color -Text "  2. Check if firewall is blocking outbound HTTPS (port 443)" -Color White
-        Write-Color -Text "  3. Ensure graph.microsoft.com and login.microsoftonline.com are accessible" -Color White
+        Write-Color -Text "  2. Check if firewall is blocking HTTPS (port 443)" -Color White
     }
-    elseif ($errorMessage -match 'scope|permission|unauthorized|forbidden|403|AADSTS') {
+    elseif ($errorMessage -match 'permission|unauthorized|forbidden|403|AADSTS') {
         Write-Color -Text "TROUBLESHOOTING: Permission issue detected" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Verify App Registration has these API permissions (Application type):" -Color White
-        Write-Color -Text "     - DeviceManagementServiceConfig.ReadWrite.All" -Color White
-        Write-Color -Text "     - Group.Read.All" -Color White
-        Write-Color -Text "     - GroupMember.ReadWrite.All" -Color White
-        Write-Color -Text "     - Device.ReadWrite.All" -Color White
-        Write-Color -Text "  2. Ensure admin consent was granted for all permissions" -Color White
-        Write-Color -Text "  3. Verify the client secret hasn't expired" -Color White
-    }
-    elseif ($errorMessage -match 'client.?secret|credential|AADSTS7000215') {
-        Write-Color -Text "TROUBLESHOOTING: Client secret issue detected" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Verify the client secret in Key Vault is correct and not expired" -Color White
-        Write-Color -Text "  2. Regenerate the secret in Entra if needed and update Key Vault" -Color White
-        Write-Color -Text "  3. Ensure the secret value (not ID) was stored in Key Vault" -Color White
-    }
-    elseif ($errorMessage -match 'group|not found') {
-        Write-Color -Text "TROUBLESHOOTING: Entra ID group issue detected" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Verify groups exist in Entra ID: AzPC - ENR - Enterprise, Kiosk, Shared" -Color White
-        Write-Color -Text "  2. Ensure group names match exactly (case-sensitive)" -Color White
-        Write-Color -Text "  3. Check the App Registration has Group.Read.All permission" -Color White
-    }
-    elseif ($errorMessage -match 'module|install') {
-        Write-Color -Text "TROUBLESHOOTING: Module installation issue detected" -Color Cyan -ShowTime
-        Write-Color -Text "  1. Ensure PowerShell Gallery (powershellgallery.com) is accessible" -Color White
-        Write-Color -Text "  2. Try running: Install-Module Microsoft.Graph -Force" -Color White
-        Write-Color -Text "  3. Check if TLS 1.2 is enabled: [Net.ServicePointManager]::SecurityProtocol" -Color White
+        Write-Color -Text "  1. Verify App Registration has required API permissions" -Color White
+        Write-Color -Text "  2. Ensure admin consent was granted" -Color White
+        Write-Color -Text "  3. Check certificate is uploaded to App Registration" -Color White
     }
 
     Write-Color -Text " "
     Write-Color -Text "Log file: ", "$transcriptPath" -Color Yellow, White -ShowTime
-    Write-Color -Text "For support, share the log file with your IT administrator." -Color DarkGray -ShowTime
 }
 finally {
     try {
-        # Clear any sensitive data from memory
-        $clientSecret = $null
+        $cert = $null
         [System.GC]::Collect()
-
-        # Disconnect from Azure (clear cached credentials)
-        Disconnect-AzAccount -ErrorAction SilentlyContinue | Out-Null
-
-        # Ensure WAM is restored even if script errors out
         Set-WAMState -Enabled $true -Silent
-
-        # Reset PSGallery trust
         Set-PSRepository -Name 'PSGallery' -InstallationPolicy Untrusted -ErrorAction SilentlyContinue | Out-Null
-
-        # Stop transcript
         Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
     }
-    catch {
-        # Do nothing - cleanup should not throw
-    }
+    catch { }
 }
