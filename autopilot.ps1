@@ -565,7 +565,7 @@ try {
         @{ Name = 'Microsoft.Graph.Groups'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.Identity.DirectoryManagement'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.DeviceManagement.Enrollment'; MinimumVersion = '2.0.0' },
-        @{ Name = 'AutopilotOOBE'; MinimumVersion = '24.10.1' }
+        @{ Name = 'AutopilotOOBE'; MinimumVersion = '24.1.29' }
     )
 
     foreach ($module in $modules) {
