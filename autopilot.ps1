@@ -613,6 +613,16 @@ try {
         Docs                        = 'https://autopilotoobe.osdeploy.com/'
     }
 
+    # ==================== SET TIME ZONE ====================
+    Write-Color -Text "Setting time zone to Eastern Standard Time..." -Color Yellow -ShowTime
+    try {
+        Set-TimeZone -Id 'Eastern Standard Time' -ErrorAction Stop
+        Write-Color -Text "  Time zone set successfully" -Color Green -ShowTime
+    }
+    catch {
+        Write-Color -Text "  WARNING: Could not set time zone: ", "$($_.Exception.Message)" -Color Yellow, White -ShowTime
+    }
+
     # ==================== GROUP VALIDATION ====================
     Write-Color -Text " "
     $groupsToValidate = $Params['AddToGroupOptions']
