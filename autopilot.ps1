@@ -24,7 +24,7 @@
     irm tinyurl.com/au-autopilot-test | iex
 
     .NOTES
-    Version:        5.0
+    Version:        5.1
     Author:         Mark Newton
     Creation Date:  07/02/2024
     Updated by:     Robert Kocsis & Joe Laskowski
@@ -38,6 +38,9 @@
     Update 4.0:     Enterprise authentication with Azure Key Vault
     Update 5.0:     Certificate-based authentication - fully automated, zero user interaction required.
                     Removed Key Vault dependency. Certificate embedded in script per MS best practices.
+    Update 5.1:     Added comprehensive device cleanup to prevent "already enrolled" errors (8018000a).
+                    Now removes existing Entra ID devices (joined & registered), Intune managed devices,
+                    and Autopilot registrations before re-registering.
 
     #>
 
@@ -253,6 +256,148 @@ function Remove-ExistingAutopilotDevice {
     }
 }
 
+function Remove-ExistingEntraDevices {
+    <#
+    .SYNOPSIS
+    Removes existing Entra ID device registrations for this device to prevent "already enrolled" errors.
+    Cleans up both "Microsoft Entra joined" and "Microsoft Entra registered" device records.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $serialNumber = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber
+    $computerName = $env:COMPUTERNAME
+
+    # Also try to get the hardware ID for more accurate matching
+    $systemEnclosure = Get-CimInstance -ClassName Win32_SystemEnclosure
+    $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
+
+    Write-Color -Text "Checking for existing Entra ID device registrations..." -Color White -ShowTime
+    Write-Color -Text "  Computer Name: ", "$computerName" -Color DarkGray, White -ShowTime
+    Write-Color -Text "  Serial Number: ", "$serialNumber" -Color DarkGray, White -ShowTime
+
+    $devicesRemoved = 0
+
+    try {
+        # Search by display name (computer name)
+        $existingDevices = @()
+
+        # Try to find devices matching this computer's name
+        if (-not [string]::IsNullOrWhiteSpace($computerName)) {
+            $byName = Get-MgDevice -Filter "displayName eq '$computerName'" -ErrorAction SilentlyContinue
+            if ($byName) { $existingDevices += $byName }
+        }
+
+        # Also search for devices with names that start with common patterns
+        # This catches devices named like WAU5303 even if current hostname differs
+        if ($computerName -match '^WAU\d+') {
+            $pattern = $computerName
+            $byPattern = Get-MgDevice -Filter "startsWith(displayName,'$pattern')" -ErrorAction SilentlyContinue
+            if ($byPattern) { $existingDevices += $byPattern }
+        }
+
+        # Deduplicate by device ID
+        $existingDevices = $existingDevices | Sort-Object -Property Id -Unique
+
+        if ($existingDevices -and $existingDevices.Count -gt 0) {
+            $deviceCount = @($existingDevices).Count
+            Write-Color -Text "Found ", "$deviceCount", " existing Entra device record(s)" -Color Yellow, Cyan, Yellow -ShowTime
+
+            foreach ($device in $existingDevices) {
+                $trustType = switch ($device.TrustType) {
+                    'AzureAd' { 'Microsoft Entra joined' }
+                    'Workplace' { 'Microsoft Entra registered' }
+                    'ServerAd' { 'Hybrid Azure AD joined' }
+                    default { $device.TrustType }
+                }
+
+                Write-Color -Text "  Device: ", "$($device.DisplayName)", " | Type: ", "$trustType", " | ID: ", "$($device.Id)" -Color White, Cyan, White, Yellow, White, DarkGray -ShowTime
+
+                try {
+                    Remove-MgDevice -DeviceId $device.Id -ErrorAction Stop
+                    Write-Color -Text "    [REMOVED] Successfully deleted device record" -Color Green -ShowTime
+                    $devicesRemoved++
+                }
+                catch {
+                    Write-Color -Text "    [FAILED] Could not remove: ", "$($_.Exception.Message)" -Color Red, White -ShowTime
+                }
+            }
+
+            if ($devicesRemoved -gt 0) {
+                Write-Color -Text "Removed ", "$devicesRemoved", " Entra device record(s). Waiting 15 seconds for propagation..." -Color Yellow, Cyan, Yellow -ShowTime
+                Start-Sleep -Seconds 15
+            }
+        }
+        else {
+            Write-Color -Text "No existing Entra device records found for this device" -Color Green -ShowTime
+        }
+
+        return $devicesRemoved
+    }
+    catch {
+        Write-Color -Text "WARNING: Error checking/removing Entra devices: ", "$($_.Exception.Message)" -Color Yellow, White -ShowTime
+        return 0
+    }
+}
+
+function Remove-ExistingIntuneManagedDevice {
+    <#
+    .SYNOPSIS
+    Removes existing Intune managed device records for this device.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $serialNumber = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber
+
+    if ([string]::IsNullOrWhiteSpace($serialNumber)) {
+        Write-Color -Text "WARNING: Could not retrieve serial number for Intune device lookup" -Color Yellow -ShowTime
+        return 0
+    }
+
+    Write-Color -Text "Checking for existing Intune managed device records..." -Color White -ShowTime
+
+    $devicesRemoved = 0
+
+    try {
+        # Get all managed devices and filter by serial number
+        # Note: Intune API filtering by serial number can be tricky, so we fetch and filter locally
+        $managedDevices = Get-MgDeviceManagementManagedDevice -Filter "serialNumber eq '$serialNumber'" -ErrorAction SilentlyContinue
+
+        if ($managedDevices -and @($managedDevices).Count -gt 0) {
+            $deviceCount = @($managedDevices).Count
+            Write-Color -Text "Found ", "$deviceCount", " existing Intune managed device(s)" -Color Yellow, Cyan, Yellow -ShowTime
+
+            foreach ($device in $managedDevices) {
+                Write-Color -Text "  Device: ", "$($device.DeviceName)", " | Serial: ", "$($device.SerialNumber)", " | ID: ", "$($device.Id)" -Color White, Cyan, White, Yellow, White, DarkGray -ShowTime
+
+                try {
+                    Remove-MgDeviceManagementManagedDevice -ManagedDeviceId $device.Id -ErrorAction Stop
+                    Write-Color -Text "    [REMOVED] Successfully deleted Intune device record" -Color Green -ShowTime
+                    $devicesRemoved++
+                }
+                catch {
+                    Write-Color -Text "    [FAILED] Could not remove: ", "$($_.Exception.Message)" -Color Red, White -ShowTime
+                }
+            }
+
+            if ($devicesRemoved -gt 0) {
+                Write-Color -Text "Removed ", "$devicesRemoved", " Intune device record(s). Waiting 10 seconds for propagation..." -Color Yellow, Cyan, Yellow -ShowTime
+                Start-Sleep -Seconds 10
+            }
+        }
+        else {
+            Write-Color -Text "No existing Intune managed device records found" -Color Green -ShowTime
+        }
+
+        return $devicesRemoved
+    }
+    catch {
+        Write-Color -Text "WARNING: Error checking/removing Intune devices: ", "$($_.Exception.Message)" -Color Yellow, White -ShowTime
+        return 0
+    }
+}
+
 function Install-RequiredModule {
     <#
     .SYNOPSIS
@@ -357,7 +502,7 @@ function Show-Banner {
     Write-Color -Text " \__,_|", " \__,_|", "|_| |_| \__,_||_|\__, | \__||_|\___|___/" -Color White, Cyan, White
     Write-Color -Text "       ", "       ", "                 |___/                  " -Color White, Cyan, White
     Write-Host ""
-    Write-Color -Text "AutopilotOOBE Prep ", "v5.0" -Color White, Cyan
+    Write-Color -Text "AutopilotOOBE Prep ", "v5.1" -Color White, Cyan
     Write-Color -Text "Certificate Authentication (Zero-Prompt)" -Color DarkGray
     Write-Host ""
 }
@@ -408,6 +553,7 @@ try {
         @{ Name = 'Microsoft.Graph.Groups'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.Identity.DirectoryManagement'; MinimumVersion = '2.0.0' },
         @{ Name = 'Microsoft.Graph.DeviceManagement.Enrollment'; MinimumVersion = '2.0.0' },
+        @{ Name = 'Microsoft.Graph.DeviceManagement'; MinimumVersion = '2.0.0' },
         @{ Name = 'AutopilotOOBE'; MinimumVersion = '24.1.29' }
     )
 
@@ -420,6 +566,7 @@ try {
     Import-Module 'Microsoft.Graph.Groups' -Force
     Import-Module 'Microsoft.Graph.Identity.DirectoryManagement' -Force
     Import-Module 'Microsoft.Graph.DeviceManagement.Enrollment' -Force
+    Import-Module 'Microsoft.Graph.DeviceManagement' -Force
     Import-Module 'AutopilotOOBE' -Force
     Write-Color -Text "All modules loaded successfully" -Color Green -ShowTime -LinesAfter 1
 
@@ -476,9 +623,28 @@ try {
         Write-Color -Text "All groups validated successfully" -Color Green -ShowTime
     }
 
-    # ==================== DUPLICATE DEVICE CHECK ====================
+    # ==================== DEVICE CLEANUP ====================
+    # Remove any existing device records to prevent "already enrolled" errors (8018000a)
     Write-Color -Text " "
+    Write-Color -Text "========== DEVICE CLEANUP ==========" -Color Cyan -ShowTime
+
+    # 1. Remove existing Entra ID device records (both joined and registered)
+    $entraRemoved = Remove-ExistingEntraDevices
+
+    # 2. Remove existing Intune managed device records
+    $intuneRemoved = Remove-ExistingIntuneManagedDevice
+
+    # 3. Remove existing Autopilot registrations
     Remove-ExistingAutopilotDevice | Out-Null
+
+    $totalRemoved = $entraRemoved + $intuneRemoved
+    if ($totalRemoved -gt 0) {
+        Write-Color -Text "Device cleanup complete. Removed ", "$totalRemoved", " record(s) total." -Color Green, Cyan, Green -ShowTime
+    }
+    else {
+        Write-Color -Text "Device cleanup complete. No existing records found." -Color Green -ShowTime
+    }
+    Write-Color -Text "====================================" -Color Cyan -ShowTime
 
     # ==================== LAUNCH AUTOPILOT OOBE ====================
     Write-Color -Text " "
